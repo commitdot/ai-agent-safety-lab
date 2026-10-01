@@ -1,0 +1,18 @@
+# Normalize line endings
+* text=auto
+
+# Shell scripts must always use LF (they run on Linux/macOS/CI)
+*.sh text eol=lf
+
+# Python files use LF
+*.py text eol=lf
+
+# YAML files use LF
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Colang rails use LF
+*.co text eol=lf
+
+# Markdown uses LF
+*.md text eol=lf
