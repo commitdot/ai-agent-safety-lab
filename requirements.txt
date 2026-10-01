@@ -1,9 +1,11 @@
 # Core runtime dependencies — used by the deployed web service on Render
-langchain==0.2.16
-langchain-openai==0.1.23
-langchain-community==0.2.16
-nemoguardrails==0.10.1
-openai==1.40.0
+# Verified compatible stack (tested with --dry-run, no conflicts):
+#   nemoguardrails 0.17.0 + langchain 0.3.x + openai 1.82.x
+nemoguardrails==0.17.0
+langchain==0.3.25
+langchain-openai==0.2.14
+langchain-community==0.3.24
+openai==1.82.1
 flask==3.0.3
 requests==2.32.3
 python-dotenv==1.0.1
