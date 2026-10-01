@@ -62,7 +62,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Garak
-        run: pip install garak
+        run: pip install -r requirements-dev.txt
 
       - name: Run Garak scan (Ollama-compatible mock)
         run: |

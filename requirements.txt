@@ -1,3 +1,4 @@
+# Core runtime dependencies — used by the deployed web service on Render
 langchain==0.2.16
 langchain-openai==0.1.23
 langchain-community==0.2.16
@@ -6,5 +7,4 @@ openai==1.40.0
 flask==3.0.3
 requests==2.32.3
 python-dotenv==1.0.1
-garak==0.17.0
 pytest==8.3.2

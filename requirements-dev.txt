@@ -1,0 +1,5 @@
+# Dev/CI-only dependencies — NOT used by the Render web service
+# garak requires openai>=2.0 which conflicts with langchain-openai==0.1.23
+# Install separately in a dedicated environment or CI job:
+#   pip install -r requirements-dev.txt
+garak==0.17.0
