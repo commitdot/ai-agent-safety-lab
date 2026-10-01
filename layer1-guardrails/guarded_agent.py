@@ -82,7 +82,9 @@ def create_app():
         print("Flask not installed. Run: pip install flask")
         sys.exit(1)
 
+    from flask_cors import CORS
     app = Flask(__name__)
+    CORS(app)
 
     DISCLAIMER = (
         "⚠️ Educational purposes only. "
