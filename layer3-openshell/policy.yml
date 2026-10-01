@@ -1,22 +1,33 @@
-# NVIDIA OpenShell Policy
+# NVIDIA OpenShell Policy — v2
 # Kernel-level enforcement for the AI agent sandbox.
 # The agent physically cannot exceed what this policy allows —
 # enforced at the OS syscall layer, not the LLM layer.
 #
 # Docs: https://docs.nvidia.com/openshell/latest/how-it-works/policies/overview
+# Security best practices: https://docs.nvidia.com/openshell/security/best-practices
+#
+# v2 changes (based on Lasso Security research, April 2026):
+#   - Added binary_bindings: domain access scoped per binary (git ≠ curl ≠ pip)
+#   - Added user_namespaces: maps container UID 0 → unprivileged host UID
+#   - Added privacy_router: sensitive paths routed to local inference only
+#   - Added supply_chain: package allowlist + pre-install hook scan
+#   - Added dlp: outbound content scanning hook for authorized channels
 
 name: ai-security-agent
-version: 1
+version: 2
 description: >
   Policy for the cybersecurity research agent.
   Grants read access to log data, write access to reports only.
-  Blocks all network except approved LLM inference endpoints.
+  Blocks all network except approved LLM inference and tooling endpoints.
   Agent never receives real credentials — injected at gateway only.
+  Binary-scoped network rules prevent tool misuse on authorized channels.
+  DLP hook scans all outbound payload content before transmission.
 
 # ---------------------------------------------------------------------------
 # Filesystem Policy
 # Agent can only see what is explicitly allowed.
 # Everything else returns ENOENT (file not found) at kernel level.
+# Enforced via Linux Landlock LSM — STATIC, locked at sandbox creation.
 # ---------------------------------------------------------------------------
 filesystem:
   allow:
@@ -44,7 +55,7 @@ filesystem:
     - path: /etc
       description: System configuration — agent must never read this
     - path: /home
-      description: User home directories — no access
+      description: User home directories — no access (blocks ~/.aws, ~/.ssh, ~/.openclaw)
     - path: /var/secrets
       description: Secrets store — agent never sees real credentials
     - path: /root
@@ -56,8 +67,16 @@ filesystem:
 
 # ---------------------------------------------------------------------------
 # Network Policy
-# Every outbound connection passes through the OpenShell gateway.
-# Agent is blocked from reaching unapproved hosts at the packet level.
+# Every outbound connection passes through the OpenShell CONNECT proxy.
+# The proxy evaluates each connection against the OPA policy engine.
+# Default: DENY ALL — only explicitly listed hosts are reachable.
+#
+# IMPORTANT (Lasso Security finding, April 2026):
+#   Network policy controls CHANNEL access — not CONTENT.
+#   An agent can exfiltrate data through an authorized channel
+#   (e.g., push sensitive files to github.com via the authorized git binary).
+#   Use binary_bindings to scope each domain to its intended binary only.
+#   Use the dlp section to scan outbound payload content.
 # ---------------------------------------------------------------------------
 network:
   allow:
@@ -81,6 +100,42 @@ network:
       description: >
         Block all other network access. Agent cannot exfiltrate data
         to attacker-controlled hosts even if reasoning is compromised.
+
+# ---------------------------------------------------------------------------
+# Binary-Scoped Network Rules
+# Closes the authorized-channel exfiltration gap (Lasso Security, 2026).
+#
+# Without binary_bindings: any authorized binary can reach any allowed host.
+# With binary_bindings:    each binary can ONLY reach its intended host(s).
+#
+# Example attack blocked:
+#   git is authorized to reach github.com.
+#   curl is NOT authorized — so a postinstall hook using curl to exfiltrate
+#   to github.com/attacker/gist is blocked even though github.com is allowed.
+# ---------------------------------------------------------------------------
+binary_bindings:
+  - binary: /usr/bin/python3
+    allowed_hosts:
+      - api.openai.com
+      - api.ollama.ai
+    description: Python process may only call LLM inference endpoints
+
+  - binary: /usr/local/bin/pip
+    allowed_hosts: []
+    description: >
+      pip is blocked from all network. Packages must be pre-installed
+      in the sandbox image. No runtime pip install allowed.
+
+  - binary: /usr/bin/curl
+    allowed_hosts:
+      - logs.internal
+    description: curl may only reach the internal log server
+
+  # git and npm are not listed here — they are not authorized binaries.
+  # Any attempt to use git or npm inside the sandbox will be denied.
+  # If git access is required for a task, it must be explicitly added
+  # with operator approval and a dlp_policy_ref pointing to a DLP rule
+  # that scans the outbound payload for credential patterns.
 
 # ---------------------------------------------------------------------------
 # Credential Injection
@@ -107,6 +162,7 @@ credentials:
 # ---------------------------------------------------------------------------
 # Process Policy
 # Controls what system calls the agent can make.
+# Enforced via Seccomp BPF — STATIC, locked at sandbox creation.
 # ---------------------------------------------------------------------------
 process:
   allow_syscalls:
@@ -134,6 +190,144 @@ process:
     - setdomainname   # prevent domain changes
 
 # ---------------------------------------------------------------------------
+# User Namespace Isolation
+# Maps container UID 0 → unprivileged host UID (defense-in-depth).
+# Even if a container escape vulnerability exists, the attacker lands
+# as an unprivileged host user — not root.
+#
+# Requires: Kubernetes 1.33+ with user namespace support,
+#           containerd 2.0+ or CRI-O 1.25+, Linux 5.12+
+# Note:     Disable if running with GPU workloads (compatibility unverified).
+# ---------------------------------------------------------------------------
+user_namespaces:
+  enabled: true
+  description: >
+    Kernel-level UID mapping: container root → unprivileged host UID.
+    Limits blast radius if sandbox escape occurs.
+
+# ---------------------------------------------------------------------------
+# Privacy Router
+# Controls which inference endpoint receives which data.
+# Prevents sensitive workspace content from reaching cloud LLM APIs.
+#
+# Lasso finding: an agent can embed sensitive file contents inside an
+# inference prompt payload and exfiltrate to api.openai.com — a permanently
+# authorized endpoint. The privacy router inspects prompts before dispatch.
+# ---------------------------------------------------------------------------
+privacy_router:
+  rules:
+    - name: sensitive-data-local-only
+      description: >
+        If the prompt payload contains content from /workspace/data,
+        route inference to the local Ollama endpoint only.
+        Never send workspace data to cloud inference.
+      match:
+        source_paths:
+          - /workspace/data
+      route_to: api.ollama.ai
+
+    - name: credential-pattern-block
+      description: >
+        If the prompt payload contains patterns matching credentials
+        (sk-, AKIA, -----BEGIN, token=, password=), block the
+        inference call entirely and log for human review.
+      match:
+        content_patterns:
+          - "sk-[A-Za-z0-9]{20,}"
+          - "AKIA[0-9A-Z]{16}"
+          - "-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----"
+          - "password\\s*=\\s*['\"][^'\"]{4,}"
+          - "token\\s*=\\s*['\"][^'\"]{8,}"
+      action: block
+      alert: true
+
+# ---------------------------------------------------------------------------
+# Supply Chain Controls
+# AI agents that install packages at task time are a supply chain target.
+# A malicious postinstall hook runs arbitrary code before the agent reasons
+# about it — bypassing all LLM-layer guardrails.
+# ---------------------------------------------------------------------------
+supply_chain:
+  package_install:
+    allowed: false
+    description: >
+      pip install and npm install are disabled at runtime.
+      All packages must be pre-baked into the sandbox image.
+      This prevents postinstall hook attacks and typosquatting.
+
+  # If package install must be enabled for a specific task, require
+  # pre-install checks before any package manager runs.
+  pre_install_checks:
+    - check: allowlist
+      description: Package name must be in the approved allowlist
+      on_fail: block
+    - check: lockfile_integrity
+      description: Lockfile integrity hashes must match known-good baseline
+      on_fail: block
+    - check: lifecycle_hooks
+      description: Block packages with postinstall / preinstall / install scripts
+      on_fail: block_and_alert
+    - check: typosquatting
+      description: Flag package names with edit-distance ≤ 2 from allowlist entries
+      on_fail: alert_and_require_approval
+
+  approved_packages:
+    python:
+      - langchain
+      - nemo-guardrails
+      - openai
+      - requests
+      - pyyaml
+    node: []  # npm install disabled — no approved node packages
+
+# ---------------------------------------------------------------------------
+# DLP — Data Loss Prevention
+# Scans outbound payload CONTENT on authorized channels.
+# Closes the gap that binary_bindings and network policy cannot:
+# an authorized binary sending sensitive content via an authorized host.
+#
+# The DLP hook intercepts the outbound payload before the CONNECT proxy
+# forwards it, runs the configured scanners, and blocks or alerts if
+# a credential or PII pattern is detected.
+# ---------------------------------------------------------------------------
+dlp:
+  enabled: true
+  mode: enforce   # enforce = block + alert | audit = alert only
+  description: >
+    Outbound content scanning for authorized channels.
+    Addresses the Lasso Security finding: OpenShell policy controls
+    WHERE data goes but not WHAT it carries on authorized channels.
+
+  scanners:
+    - name: credential-patterns
+      description: Block outbound payloads containing credential strings
+      patterns:
+        - "sk-[A-Za-z0-9]{20,}"              # OpenAI API key
+        - "AKIA[0-9A-Z]{16}"                 # AWS access key
+        - "-----BEGIN .* PRIVATE KEY-----"   # Private key
+        - "ghp_[A-Za-z0-9]{36}"              # GitHub personal access token
+        - "xoxb-[0-9]+-[A-Za-z0-9]+"        # Slack bot token
+      action: block
+      alert: true
+
+    - name: pii-patterns
+      description: Alert on outbound payloads containing PII
+      patterns:
+        - "[0-9]{3}-[0-9]{2}-[0-9]{4}"       # SSN
+        - "[0-9]{16}"                          # Credit card number (naive)
+      action: alert
+      severity: HIGH
+
+    - name: workspace-file-content
+      description: >
+        Alert when outbound payload contains raw content from workspace files.
+        Indicates agent may be exfiltrating data via authorized inference endpoint.
+      match_source_paths:
+        - /workspace/data
+      action: alert
+      severity: MEDIUM
+
+# ---------------------------------------------------------------------------
 # Formal Verification Settings
 # Before any policy change is approved, OpenShell mathematically proves
 # what new access it would grant and flags it for human review.
@@ -144,3 +338,6 @@ policy_verification:
     - new_credential_binding  # new credential → endpoint mapping
     - expanded_filesystem     # writing to previously read-only paths
     - new_syscall_permission  # any new syscall permission
+    - new_binary_binding      # any new binary → host authorization
+    - dlp_rule_change         # any change to DLP rules or mode
+    - supply_chain_allowlist  # adding a new approved package
