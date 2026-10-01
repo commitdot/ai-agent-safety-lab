@@ -332,6 +332,35 @@ bash layer3-openshell/run_in_sandbox.sh
 
 ---
 
+## 🗂️ Quick Reference — All Scripts
+
+| Script | What it demonstrates | API key needed? | Live agent? |
+|--------|----------------------|-----------------|-------------|
+| `python target/agent.py` | Unprotected agent — fully exploitable baseline | Yes (or Ollama) | Yes |
+| `python layer1-guardrails/guarded_agent.py` | Layer 1 NeMo Guardrails active | Yes (or Ollama) | Yes |
+| `python red-team/attacks/prompt_injection.py` | Direct prompt injection vs unprotected agent | Yes (or mock key) | Yes |
+| `TEST_PROTECTED=true python red-team/attacks/prompt_injection.py` | Same injections vs protected agent | Yes (or mock key) | Yes |
+| `python red-team/attacks/indirect_injection.py` | Poisoned web pages / logs / documents | No | Simulation |
+| `python red-team/attacks/credential_theft.py` | Env var extraction, file reads, HTTP exfil | No | Simulation |
+| `python red-team/attacks/authorized_channel_exfil.py` | Sandbox weaponized via authorized channels (Lasso) | No | Simulation |
+| `python red-team/attacks/supply_chain.py` | Postinstall hooks, typosquatting, lockfile tampering | No | Simulation |
+| `python layer4-dlp/scanner.py` | DLP catches credentials / PII in outbound payloads | No | Simulation |
+| `python layer4-dlp/supply_chain.py` | Allowlist, hook scan, lockfile integrity checks | No | Simulation |
+| `pip install garak && bash red-team/garak_scan.sh` | Automated LLM vulnerability scan (jailbreak, leakage, DAN) | Yes | Live |
+| `bash layer3-openshell/setup.sh` | Install OpenShell + create kernel sandbox | No | Setup only |
+| `bash layer3-openshell/run_in_sandbox.sh` | Run guarded agent inside OpenShell sandbox | Yes + Docker | Live |
+
+> **Fastest way to see the new defenses without any API key or Docker:**
+> ```bash
+> pip install -r requirements.txt
+> python red-team/attacks/authorized_channel_exfil.py
+> python red-team/attacks/supply_chain.py
+> python layer4-dlp/scanner.py
+> python layer4-dlp/supply_chain.py
+> ```
+
+---
+
 ## 📊 Results
 
 ### Classic attacks (before / after all layers)
