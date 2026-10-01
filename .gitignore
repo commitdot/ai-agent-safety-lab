@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+*.pkl
+.pytest_cache/
+htmlcov/
+.coverage
+red-team/reports/*.html
+red-team/reports/*.json
+red-team/reports/*.jsonl
+data/
+results/*.json
+.openshell/

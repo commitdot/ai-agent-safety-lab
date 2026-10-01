@@ -1,0 +1,27 @@
+models:
+  - type: main
+    engine: openai
+    model: gpt-3.5-turbo
+
+# Uncomment to use local Ollama instead:
+# models:
+#   - type: main
+#     engine: ollama
+#     model: llama3
+
+rails:
+  input:
+    flows:
+      - block prompt injection
+      - block jailbreak attempts
+      - check topic relevance
+
+  output:
+    flows:
+      - block credential leakage
+      - block pii disclosure
+      - check response safety
+
+  dialog:
+    flows:
+      - require tool confirmation

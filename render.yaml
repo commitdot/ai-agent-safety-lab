@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: ai-agent-safety-lab
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python layer1-guardrails/guarded_agent.py"
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false       # set this in the Render dashboard — never commit real keys
+      - key: PORT
+        generateValue: true  # Render injects the assigned port automatically

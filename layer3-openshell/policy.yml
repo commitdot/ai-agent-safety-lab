@@ -1,0 +1,146 @@
+# NVIDIA OpenShell Policy
+# Kernel-level enforcement for the AI agent sandbox.
+# The agent physically cannot exceed what this policy allows —
+# enforced at the OS syscall layer, not the LLM layer.
+#
+# Docs: https://docs.nvidia.com/openshell/latest/how-it-works/policies/overview
+
+name: ai-security-agent
+version: 1
+description: >
+  Policy for the cybersecurity research agent.
+  Grants read access to log data, write access to reports only.
+  Blocks all network except approved LLM inference endpoints.
+  Agent never receives real credentials — injected at gateway only.
+
+# ---------------------------------------------------------------------------
+# Filesystem Policy
+# Agent can only see what is explicitly allowed.
+# Everything else returns ENOENT (file not found) at kernel level.
+# ---------------------------------------------------------------------------
+filesystem:
+  allow:
+    - path: /workspace/data
+      mode: read
+      description: Input data and log files the agent analyzes
+
+    - path: /workspace/results
+      mode: read-write
+      description: Agent writes reports and findings here
+
+    - path: /tmp/agent-scratch
+      mode: read-write
+      description: Temporary scratch space for intermediate work
+
+    - path: /usr/lib/python3
+      mode: read
+      description: Python standard library — needed to run
+
+    - path: /usr/local/lib/python3
+      mode: read
+      description: Installed Python packages
+
+  deny:
+    - path: /etc
+      description: System configuration — agent must never read this
+    - path: /home
+      description: User home directories — no access
+    - path: /var/secrets
+      description: Secrets store — agent never sees real credentials
+    - path: /root
+      description: Root home — no access
+    - path: /proc
+      description: Process information — prevents host enumeration
+    - path: /sys
+      description: Kernel interfaces — no access
+
+# ---------------------------------------------------------------------------
+# Network Policy
+# Every outbound connection passes through the OpenShell gateway.
+# Agent is blocked from reaching unapproved hosts at the packet level.
+# ---------------------------------------------------------------------------
+network:
+  allow:
+    - host: api.openai.com
+      port: 443
+      protocol: https
+      description: OpenAI LLM inference endpoint
+
+    - host: api.ollama.ai
+      port: 11434
+      protocol: http
+      description: Local Ollama inference endpoint
+
+    - host: logs.internal
+      port: 9200
+      protocol: https
+      description: Internal Elasticsearch log server (read-only)
+
+  deny:
+    - host: "*"
+      description: >
+        Block all other network access. Agent cannot exfiltrate data
+        to attacker-controlled hosts even if reasoning is compromised.
+
+# ---------------------------------------------------------------------------
+# Credential Injection
+# Agent never has real API keys in memory.
+# OpenShell gateway injects credentials only to approved endpoints.
+# ---------------------------------------------------------------------------
+credentials:
+  - name: openai-api-key
+    secret_ref: OPENAI_API_KEY
+    inject_to: api.openai.com
+    header: Authorization
+    format: "Bearer {secret}"
+    description: >
+      OpenAI key injected at network layer only.
+      Agent process never sees the actual key value.
+
+  - name: elasticsearch-token
+    secret_ref: ES_API_TOKEN
+    inject_to: logs.internal
+    header: X-Api-Token
+    description: >
+      Elasticsearch token — injected only to approved log server.
+
+# ---------------------------------------------------------------------------
+# Process Policy
+# Controls what system calls the agent can make.
+# ---------------------------------------------------------------------------
+process:
+  allow_syscalls:
+    - read
+    - write
+    - open
+    - close
+    - stat
+    - fstat
+    - mmap
+    - munmap
+    - brk
+    - execve          # needed to run subprocess tools
+    - fork
+    - wait4
+    - getpid
+    - getuid
+
+  deny_syscalls:
+    - ptrace          # prevent process inspection / debugger attachment
+    - kexec_load      # prevent kernel replacement
+    - mount           # prevent filesystem mounting
+    - pivot_root      # prevent root directory changes
+    - sethostname     # prevent hostname changes
+    - setdomainname   # prevent domain changes
+
+# ---------------------------------------------------------------------------
+# Formal Verification Settings
+# Before any policy change is approved, OpenShell mathematically proves
+# what new access it would grant and flags it for human review.
+# ---------------------------------------------------------------------------
+policy_verification:
+  require_human_approval_for:
+    - new_network_host        # any new outbound host requires review
+    - new_credential_binding  # new credential → endpoint mapping
+    - expanded_filesystem     # writing to previously read-only paths
+    - new_syscall_permission  # any new syscall permission

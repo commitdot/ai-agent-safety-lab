@@ -1,0 +1,168 @@
+name: 🔴 AI Agent Red Team — Automated Security Testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security scan daily at 2am UTC
+    - cron: '0 2 * * *'
+
+jobs:
+
+  # -------------------------------------------------------------------------
+  # Attack Scripts — custom injection, indirect injection, credential tests
+  # -------------------------------------------------------------------------
+  custom-attacks:
+    name: 🎯 Custom Attack Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install langchain langchain-community requests python-dotenv pytest
+
+      - name: Run prompt injection tests
+        run: python red-team/attacks/prompt_injection.py
+        env:
+          # No real API key — tests use mock responses
+          OPENAI_API_KEY: "mock-key-for-ci"
+
+      - name: Run indirect injection tests
+        run: python red-team/attacks/indirect_injection.py
+
+      - name: Run credential theft tests
+        run: python red-team/attacks/credential_theft.py
+
+      - name: Upload attack reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attack-reports
+          path: red-team/reports/*.json
+
+  # -------------------------------------------------------------------------
+  # Garak Scan — automated LLM vulnerability scanner
+  # -------------------------------------------------------------------------
+  garak-scan:
+    name: 🔬 Garak LLM Vulnerability Scan
+    runs-on: ubuntu-latest
+    # Only run on push to main (costs API credits)
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Garak
+        run: pip install garak
+
+      - name: Run Garak scan (Ollama-compatible mock)
+        run: |
+          mkdir -p red-team/reports
+          # In CI without real API: run probe validation only
+          python3 -m garak --list_probes > red-team/reports/available_probes.txt
+          echo "Garak installed and probes available:"
+          cat red-team/reports/available_probes.txt | head -30
+        continue-on-error: true
+
+      - name: Upload Garak reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: garak-reports
+          path: red-team/reports/
+
+  # -------------------------------------------------------------------------
+  # Policy Validation — validate OpenShell policy.yml structure
+  # -------------------------------------------------------------------------
+  policy-validation:
+    name: 📋 OpenShell Policy Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install pyyaml pytest
+
+      - name: Validate policy.yml structure
+        run: python -c "
+import yaml, sys
+with open('layer3-openshell/policy.yml') as f:
+    policy = yaml.safe_load(f)
+
+required = ['name', 'version', 'filesystem', 'network', 'credentials']
+missing = [k for k in required if k not in policy]
+if missing:
+    print(f'FAIL: policy.yml missing required fields: {missing}')
+    sys.exit(1)
+
+# Check filesystem has allow and deny
+fs = policy.get('filesystem', {})
+assert 'allow' in fs, 'filesystem must have allow section'
+assert 'deny' in fs, 'filesystem must have deny section'
+
+# Check network has allow
+net = policy.get('network', {})
+assert 'allow' in net, 'network must have allow section'
+
+# Check credentials defined
+creds = policy.get('credentials', [])
+assert len(creds) > 0, 'must define at least one credential'
+
+print('✅ policy.yml is valid')
+print(f'   Filesystem allow rules: {len(fs[\"allow\"])}')
+print(f'   Filesystem deny rules:  {len(fs[\"deny\"])}')
+print(f'   Network allow rules:    {len(net[\"allow\"])}')
+print(f'   Credentials defined:    {len(creds)}')
+"
+
+  # -------------------------------------------------------------------------
+  # Guardrails Validation — validate NeMo config files
+  # -------------------------------------------------------------------------
+  guardrails-validation:
+    name: 🛡️ NeMo Guardrails Config Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Validate guardrails config.yml
+        run: python -c "
+import yaml, sys
+with open('layer1-guardrails/config/config.yml') as f:
+    config = yaml.safe_load(f)
+
+assert 'models' in config, 'config.yml must have models section'
+assert 'rails' in config, 'config.yml must have rails section'
+rails = config['rails']
+assert 'input' in rails, 'rails must have input section'
+assert 'output' in rails, 'rails must have output section'
+print('✅ guardrails config.yml is valid')
+"
+
+      - name: Check rails.co exists and is non-empty
+        run: |
+          if [ ! -s layer1-guardrails/config/rails.co ]; then
+            echo "FAIL: rails.co is missing or empty"
+            exit 1
+          fi
+          FLOW_COUNT=$(grep -c "^flow " layer1-guardrails/config/rails.co || true)
+          echo "✅ rails.co valid — $FLOW_COUNT flows defined"
