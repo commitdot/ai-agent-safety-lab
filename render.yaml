@@ -2,6 +2,7 @@ services:
   - type: web
     name: ai-agent-safety-lab
     runtime: python
+    pythonVersion: "3.12.0"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python layer1-guardrails/guarded_agent.py"
     envVars:
